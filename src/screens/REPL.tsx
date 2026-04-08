@@ -238,7 +238,7 @@ import { usePromptsFromClaudeInChrome } from 'src/hooks/usePromptsFromClaudeInCh
 import { getTipToShowOnSpinner, recordShownTip } from 'src/services/tips/tipScheduler.js';
 import type { Theme } from 'src/utils/theme.js';
 import { isPromptTypingSuppressionActive } from './replInputSuppression.js';
-import { shouldRunStartupChecks, STARTUP_CHECK_DELAY_MS } from './replStartupGates.js';
+import { shouldRunStartupChecks, STARTUP_GRACE_PERIOD_MS } from './replStartupGates.js';
 import { checkAndDisableBypassPermissionsIfNeeded, checkAndDisableAutoModeIfNeeded, useKickOffCheckAndDisableBypassPermissionsIfNeeded, useKickOffCheckAndDisableAutoModeIfNeeded } from 'src/utils/permissions/bypassPermissionsKillswitch.js';
 import { SandboxManager } from 'src/utils/sandbox/sandbox-adapter.js';
 import { SANDBOX_NETWORK_ACCESS_TOOL_NAME } from 'src/cli/structuredIO.js';
@@ -1338,20 +1338,33 @@ export function REPL({
   inputValueRef.current = inputValue;
   const promptTypingSuppressionActive = isPromptTypingSuppressionActive(isPromptInputActive, inputValue);
 
-  // Defer startup checks by STARTUP_CHECK_DELAY_MS and gate on
-  // promptTypingSuppressionActive so that plugin loading doesn't steal focus
-  // from the prompt during the vulnerable startup window (issue #363).
+  // Defer startup checks until the user has interacted with the prompt.
+  // A pure timeout is insufficient (issue #363): if the user pauses >1.5s
+  // before typing, the timer can still fire and recommendation dialogs can
+  // steal focus. Instead, we gate on actual prompt readiness:
+  //  - First message submitted (submitCount > 0)
+  //  - Grace period elapsed + user is not actively typing
+  //  - User is typing (deferred until they stop)
   const startupChecksStartedRef = React.useRef(false);
+  const [startupGraceElapsed, setStartupGraceElapsed] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setStartupGraceElapsed(true), STARTUP_GRACE_PERIOD_MS);
+    return () => clearTimeout(timer);
+  }, []);
+  const hasHadFirstSubmission = submitCount > 0;
   useEffect(() => {
     if (isRemoteSession) return;
     if (startupChecksStartedRef.current) return;
-    const timer = setTimeout(() => {
-      if (!shouldRunStartupChecks(isRemoteSession, startupChecksStartedRef.current, promptTypingSuppressionActive)) return;
-      startupChecksStartedRef.current = true;
-      void performStartupChecks(setAppState);
-    }, STARTUP_CHECK_DELAY_MS);
-    return () => clearTimeout(timer);
-  }, [setAppState, isRemoteSession, promptTypingSuppressionActive]);
+    if (!shouldRunStartupChecks({
+      isRemoteSession,
+      hasStarted: startupChecksStartedRef.current,
+      promptTypingSuppressionActive,
+      hasHadFirstSubmission,
+      gracePeriodElapsed: startupGraceElapsed,
+    })) return;
+    startupChecksStartedRef.current = true;
+    void performStartupChecks(setAppState);
+  }, [setAppState, isRemoteSession, promptTypingSuppressionActive, hasHadFirstSubmission, startupGraceElapsed]);
   const insertTextRef = useRef<{
     insert: (text: string) => void;
     setInputWithCursor: (value: string, cursor: number) => void;
