@@ -106,3 +106,4 @@ npm uninstall -g @gitlawb/openclaude
 Use:
 
 - [Advanced Setup](advanced-setup.md)
+- [Windows Power Aliases and Launchers](windows-aliases-and-launchers.md)

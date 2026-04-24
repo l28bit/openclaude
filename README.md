@@ -107,7 +107,7 @@ Best if you want local inference on Apple Silicon with Atomic Chat. See [Advance
 
 ## VS Code Extension
 
-Want a native VS Code experience? Use the in-repo extension at `vscode-extension/openclaude-vscode` for one-command terminal launch and the `OpenClaude Terminal Black` theme.
+Want a native VS Code experience? Use the in-repo extension at `vscode-extension/openclaude-vscode` for one-command terminal launch, optional **Microsoft Foundry / Azure OpenAI** chat configuration (endpoint, API version, deployment, API key via Secret Storage), and the `OpenClaude Terminal Black` theme. Open that folder in VS Code and press **F5** to run the extension, or build a `.vsix` with `npm run package` inside the extension folder. See `vscode-extension/openclaude-vscode/README.md`.
 
 ## What Works
 
