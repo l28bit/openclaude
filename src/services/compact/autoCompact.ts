@@ -45,7 +45,12 @@ export function getEffectiveContextWindowSize(model: string): number {
     }
   }
 
-  return contextWindow - reservedTokensForSummary
+  // Floor: effective context must be at least the summary reservation plus a
+  // usable buffer. If it goes lower, the auto-compact threshold becomes
+  // negative and fires on every message (issue #635).
+  const autocompactBuffer = 13_000 // must match AUTOCOMPACT_BUFFER_TOKENS
+  const effectiveContext = contextWindow - reservedTokensForSummary
+  return Math.max(effectiveContext, reservedTokensForSummary + autocompactBuffer)
 }
 
 export type AutoCompactTrackingState = {
@@ -105,9 +110,14 @@ export function calculateTokenWarningState(
     ? autoCompactThreshold
     : getEffectiveContextWindowSize(model)
 
+  // Use the raw context window (without output reservation) for the percentage
+  // display, so users see remaining context relative to the model's full capacity.
+  // The threshold (which subtracts buffer) should only affect when we warn/compact,
+  // not what percentage we display.
+  const rawContextWindow = getContextWindowForModel(model, getSdkBetas())
   const percentLeft = Math.max(
     0,
-    Math.round(((threshold - tokenUsage) / threshold) * 100),
+    Math.round(((rawContextWindow - tokenUsage) / rawContextWindow) * 100),
   )
 
   const warningThreshold = threshold - WARNING_THRESHOLD_BUFFER_TOKENS
@@ -188,7 +198,7 @@ export async function shouldAutoCompact(
 
   // Reactive-only mode: suppress proactive autocompact, let reactive compact
   // catch the API's prompt-too-long. feature() wrapper keeps the flag string
-  // out of external builds (REACTIVE_COMPACT is ant-only).
+  // out of external builds (REACTIVE_COMPACT is internal-only).
   // Note: returning false here also means autoCompactIfNeeded never reaches
   // trySessionMemoryCompaction in the query loop — the /compact call site
   // still tries session memory first. Revisit if reactive-only graduates.

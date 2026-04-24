@@ -202,7 +202,7 @@ export function hasGrowthBookEnvOverride(feature: string): boolean {
 }
 
 /**
- * Local config overrides set via /config Gates tab (ant-only). Checked after
+ * Local config overrides set via /config Gates tab (internal-only). Checked after
  * env-var overrides — env wins so eval harnesses remain deterministic. Unlike
  * getEnvOverrides this is not memoized: the user can change overrides at
  * runtime, and getGlobalConfig() is already memory-cached (pointer-chase)
@@ -334,7 +334,7 @@ async function processRemoteEvalPayload(
   // Empty object is truthy — without the length check, `{features: {}}`
   // (transient server bug, truncated response) would pass, clear the maps
   // below, return true, and syncRemoteEvalToDisk would wholesale-write `{}`
-  // to disk: total flag blackout for every process sharing ~/.claude.json.
+  // to disk: total flag blackout for every process sharing ~/.openclaude.json.
   if (!payload?.features || Object.keys(payload.features).length === 0) {
     return false
   }

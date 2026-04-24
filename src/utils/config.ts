@@ -31,6 +31,7 @@ import { normalizePathForConfigKey } from './path.js'
 import { getEssentialTrafficOnlyReason } from './privacyLevel.js'
 import { getManagedFilePath } from './settings/managedPath.js'
 import type { ThemeSetting } from './theme.js'
+import { PRIMARY_PROJECT_INSTRUCTION_FILE } from './projectInstructions.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemPaths = feature('TEAMMEM')
@@ -154,7 +155,7 @@ export {
   NOTIFICATION_CHANNELS,
 } from './configConstants.js'
 
-import type { EDITOR_MODES, NOTIFICATION_CHANNELS } from './configConstants.js'
+import type { EDITOR_MODES, NOTIFICATION_CHANNELS, PROVIDERS } from './configConstants.js'
 
 export type NotificationChannel = (typeof NOTIFICATION_CHANNELS)[number]
 
@@ -179,6 +180,17 @@ export type EditorMode = 'emacs' | (typeof EDITOR_MODES)[number]
 export type DiffTool = 'terminal' | 'auto'
 
 export type OutputStyle = string
+
+export type Providers = typeof PROVIDERS[number]
+
+export type ProviderProfile = {
+  id: string
+  name: string
+  provider: Providers
+  baseUrl: string
+  model: string
+  apiKey?: string
+}
 
 export type GlobalConfig = {
   /**
@@ -223,15 +235,16 @@ export type GlobalConfig = {
   }
   primaryApiKey?: string // Primary API key for the user when no environment variable is set, set via oauth (TODO: rename)
   hasAcknowledgedCostThreshold?: boolean
-  hasSeenUndercoverAutoNotice?: boolean // ant-only: whether the one-time auto-undercover explainer has been shown
-  hasSeenUltraplanTerms?: boolean // ant-only: whether the one-time CCR terms notice has been shown in the ultraplan launch dialog
-  hasResetAutoModeOptInForDefaultOffer?: boolean // ant-only: one-shot migration guard, re-prompts churned auto-mode users
+  hasSeenUndercoverAutoNotice?: boolean // internal-only: whether the one-time auto-undercover explainer has been shown
+  hasSeenUltraplanTerms?: boolean // internal-only: whether the one-time CCR terms notice has been shown in the ultraplan launch dialog
+  hasResetAutoModeOptInForDefaultOffer?: boolean // internal-only: one-shot migration guard, re-prompts churned auto-mode users
   oauthAccount?: AccountInfo
   iterm2KeyBindingInstalled?: boolean // Legacy - keeping for backward compatibility
   editorMode?: EditorMode
   bypassPermissionsModeAccepted?: boolean
   hasUsedBackslashReturn?: boolean
   autoCompactEnabled: boolean // Controls whether auto-compact is enabled
+  toolHistoryCompressionEnabled: boolean // Compress old tool_result content for small-context providers
   showTurnDuration: boolean // Controls whether to show turn duration message (e.g., "Cooked for 1m 6s")
   /**
    * @deprecated Use settings.env instead.
@@ -396,7 +409,7 @@ export type GlobalConfig = {
   // Claude Code usage tracking
   claudeCodeFirstTokenDate?: string // ISO timestamp of the user's first Claude Code OAuth token
 
-  // Model switch callout tracking (ant-only)
+  // Model switch callout tracking (internal-only)
   modelSwitchCalloutDismissed?: boolean // Whether user chose "Don't show again"
   modelSwitchCalloutLastShown?: number // Timestamp of last shown (don't show for 24h)
   modelSwitchCalloutVersion?: string
@@ -448,7 +461,7 @@ export type GlobalConfig = {
   // Cached GrowthBook feature values
   cachedGrowthBookFeatures?: { [featureName: string]: unknown }
 
-  // Local GrowthBook overrides (ant-only, set via /config Gates tab).
+  // Local GrowthBook overrides (internal-only, set via /config Gates tab).
   // Checked after env-var overrides but before the real resolved value.
   growthBookOverrides?: { [featureName: string]: unknown }
 
@@ -463,6 +476,11 @@ export type GlobalConfig = {
 
   // Fullscreen in-app text selection behavior
   copyOnSelect?: boolean // Auto-copy to clipboard on mouse-up (undefined → true; lets cmd+c "work" via no-op)
+
+  // Flicker-free fullscreen mode (equivalent to CLAUDE_CODE_NO_FLICKER=1 env var).
+  // When true, enables alt-screen + virtualized scroll for all users.
+  // Env var still takes precedence: =0 always off, =1 always on.
+  flickerFreeMode?: boolean
 
   // GitHub repo path mapping for teleport directory switching
   // Key: "owner/repo" (lowercase), Value: array of absolute paths where repo is cloned
@@ -531,7 +549,7 @@ export type GlobalConfig = {
   // PR status footer configuration (feature-flagged via GrowthBook)
   prStatusFooterEnabled?: boolean // Show PR review status in footer (default: true)
 
-  // Tmux live panel visibility (ant-only, toggled via Enter on tmux pill)
+  // Tmux live panel visibility (internal-only, toggled via Enter on tmux pill)
   tungstenPanelVisible?: boolean
 
   // Cached org-level fast mode status from the API.
@@ -550,10 +568,10 @@ export type GlobalConfig = {
   // undefined = no cache, null = extra usage enabled, string = disabled reason.
   cachedExtraUsageDisabledReason?: string | null
 
-  // Auto permissions notification tracking (ant-only)
+  // Auto permissions notification tracking (internal-only)
   autoPermissionsNotificationCount?: number // Number of times the auto permissions notification has been shown
 
-  // Speculation configuration (ant-only)
+  // Speculation configuration (internal-only)
   speculationEnabled?: boolean // Whether speculation is enabled (default: true)
 
 
@@ -562,6 +580,19 @@ export type GlobalConfig = {
 
   // Additional model options for the model picker (fetched during bootstrap).
   additionalModelOptionsCache?: ModelOption[]
+  additionalModelOptionsCacheScope?: string
+
+  // Additional model options discovered from OpenAI-compatible endpoints.
+  openaiAdditionalModelOptionsCache?: ModelOption[]
+
+  // Provider profiles managed inside the TUI. The active profile determines
+  // which API provider env vars are applied for the current session.
+  providerProfiles?: ProviderProfile[]
+  activeProviderProfileId?: string
+
+  // Per-profile cache for models discovered from OpenAI-compatible endpoints.
+  // Keyed by provider profile id.
+  openaiAdditionalModelOptionsCacheByProfile?: Record<string, ModelOption[]>
 
   // Disk cache for /api/claude_code/organizations/metrics_enabled.
   // Org-level settings change rarely; persisting across processes avoids a
@@ -592,6 +623,7 @@ function createDefaultGlobalConfig(): GlobalConfig {
     verbose: false,
     editorMode: 'normal',
     autoCompactEnabled: true,
+    toolHistoryCompressionEnabled: true,
     showTurnDuration: true,
     hasSeenTasksHint: false,
     hasUsedStash: false,
@@ -619,6 +651,8 @@ function createDefaultGlobalConfig(): GlobalConfig {
     cachedGrowthBookFeatures: {},
     respectGitignore: true,
     copyFullResponse: false,
+    providerProfiles: [],
+    openaiAdditionalModelOptionsCacheByProfile: {},
   }
 }
 
@@ -636,6 +670,7 @@ export const GLOBAL_CONFIG_KEYS = [
   'editorMode',
   'hasUsedBackslashReturn',
   'autoCompactEnabled',
+  'toolHistoryCompressionEnabled',
   'showTurnDuration',
   'diffTool',
   'env',
@@ -659,6 +694,7 @@ export const GLOBAL_CONFIG_KEYS = [
   'lspRecommendationIgnoredCount',
   'copyFullResponse',
   'copyOnSelect',
+  'flickerFreeMode',
   'permissionExplainerEnabled',
   'prStatusFooterEnabled',
   'remoteControlAtStartup',
@@ -884,8 +920,8 @@ let lastReadFileStats: { mtime: number; size: number } | null = null
 let configCacheHits = 0
 let configCacheMisses = 0
 // Session-total count of actual disk writes to the global config file.
-// Exposed for ant-only dev diagnostics (see inc-4552) so anomalous write
-// rates surface in the UI before they corrupt ~/.claude.json.
+// Exposed for internal-only dev diagnostics (see inc-4552) so anomalous write
+// rates surface in the UI before they corrupt ~/.openclaude.json.
 let globalConfigWriteCount = 0
 
 export function getGlobalConfigWriteCount(): number {
@@ -1096,7 +1132,7 @@ export function getGlobalConfig(): GlobalConfig {
 /**
  * Returns the effective value of remoteControlAtStartup. Precedence:
  *   1. User's explicit config value (always wins — honors opt-out)
- *   2. CCR auto-connect default (ant-only build, GrowthBook-gated)
+ *   2. CCR auto-connect default (internal-only build, GrowthBook-gated)
  *   3. false (Remote Control must be explicitly opted into)
  */
 export function getRemoteControlAtStartup(): boolean {
@@ -1224,7 +1260,7 @@ function saveConfigWithLock<A extends object>(
     const currentConfig = getConfig(file, createDefault)
     if (file === getGlobalClaudeFile() && wouldLoseAuthState(currentConfig)) {
       logForDebugging(
-        'saveConfigWithLock: re-read config is missing auth that cache has; refusing to write to avoid wiping ~/.claude.json. See GH #3117.',
+        'saveConfigWithLock: re-read config is missing auth that cache has; refusing to write to avoid wiping ~/.openclaude.json. See GH #3117.',
         { level: 'error' },
       )
       logEvent('tengu_config_auth_loss_prevented', {})
@@ -1793,7 +1829,7 @@ export function getMemoryPath(memoryType: MemoryType): string {
     case 'Local':
       return join(cwd, 'CLAUDE.local.md')
     case 'Project':
-      return join(cwd, 'CLAUDE.md')
+      return join(cwd, PRIMARY_PROJECT_INSTRUCTION_FILE)
     case 'Managed':
       return join(getManagedFilePath(), 'CLAUDE.md')
     case 'AutoMem':

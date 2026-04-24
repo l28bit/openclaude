@@ -1,5 +1,6 @@
 import { spawnSync } from 'child_process'
 import { getIsInteractive } from '../bootstrap/state.js'
+import { getGlobalConfig } from './config.js'
 import { logForDebugging } from './debug.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
 import { execFileNoThrow } from './execFileNoThrow.js'
@@ -105,14 +106,21 @@ export function _resetTmuxControlModeProbeForTesting(): void {
 }
 
 /**
- * Runtime env-var check only. Ants default to on (CLAUDE_CODE_NO_FLICKER=0
- * to opt out); external users default to off (CLAUDE_CODE_NO_FLICKER=1 to
- * opt in).
+ * Whether fullscreen (flicker-free) mode is enabled. Env var takes highest
+ * precedence, then the `flickerFreeMode` config setting, then defaults to off.
+ * Users can enable via `/config` instead of setting the env.
+ *
+ * Priority order:
+ *   CLAUDE_CODE_NO_FLICKER=0  → always off
+ *   CLAUDE_CODE_NO_FLICKER=1  → always on (overrides tmux -CC guard too)
+ *   tmux -CC detected         → off (corrupts terminal state)
+ *   config flickerFreeMode    → on/off per user preference
+ *   default                   → off
  */
 export function isFullscreenEnvEnabled(): boolean {
-  // Explicit user opt-out always wins.
+  // Explicit env opt-out always wins.
   if (isEnvDefinedFalsy(process.env.CLAUDE_CODE_NO_FLICKER)) return false
-  // Explicit opt-in overrides auto-detection (escape hatch).
+  // Explicit env opt-in overrides everything including tmux -CC.
   if (isEnvTruthy(process.env.CLAUDE_CODE_NO_FLICKER)) return true
   // Auto-disable under tmux -CC: alt-screen + mouse tracking corrupts
   // terminal state on double-click and mouse wheel is dead.
@@ -125,7 +133,11 @@ export function isFullscreenEnvEnabled(): boolean {
     }
     return false
   }
-  return process.env.USER_TYPE === 'ant'
+  // Config-based toggle: lets external users enable flicker-free mode via
+  // `/config` without having to set an env var.
+  const configValue = getGlobalConfig().flickerFreeMode
+  if (configValue !== undefined) return configValue
+  return false
 }
 
 /**

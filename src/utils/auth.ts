@@ -118,6 +118,7 @@ export function isAnthropicAuthEnabled(): boolean {
     isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_GEMINI) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_MISTRAL) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_GITHUB)
 
   // Check if user has configured an external API key source
@@ -692,7 +693,7 @@ export function refreshAwsAuth(awsAuthRefresh: string): Promise<boolean> {
               'AWS auth refresh timed out after 3 minutes. Run your auth command manually in a separate terminal.',
             )
           : chalk.red(
-              'Error running awsAuthRefresh (in settings or ~/.claude.json):',
+              'Error running awsAuthRefresh (in settings or ~/.openclaude.json):',
             )
         // biome-ignore lint/suspicious/noConsole:: intentional console output
         console.error(message)
@@ -770,7 +771,7 @@ async function getAwsCredsFromCredentialExport(): Promise<{
       }
     } catch (e) {
       const message = chalk.red(
-        'Error getting AWS credentials from awsCredentialExport (in settings or ~/.claude.json):',
+        'Error getting AWS credentials from awsCredentialExport (in settings or ~/.openclaude.json):',
       )
       if (e instanceof Error) {
         // biome-ignore lint/suspicious/noConsole:: intentional console output
@@ -960,7 +961,7 @@ export function refreshGcpAuth(gcpAuthRefresh: string): Promise<boolean> {
               'GCP auth refresh timed out after 3 minutes. Run your auth command manually in a separate terminal.',
             )
           : chalk.red(
-              'Error running gcpAuthRefresh (in settings or ~/.claude.json):',
+              'Error running gcpAuthRefresh (in settings or ~/.openclaude.json):',
             )
         // biome-ignore lint/suspicious/noConsole:: intentional console output
         console.error(message)
@@ -1741,6 +1742,7 @@ export function isUsing3PServices(): boolean {
     isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_GEMINI) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_MISTRAL) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_GITHUB)
   )
 }
@@ -1957,7 +1959,7 @@ export async function validateForceLoginOrg(): Promise<OrgValidationResult> {
 
   // Always fetch the authoritative org UUID from the profile endpoint.
   // Even keychain-sourced tokens verify server-side: the cached org UUID
-  // in ~/.claude.json is user-writable and cannot be trusted.
+  // in ~/.openclaude.json is user-writable and cannot be trusted.
   const { source } = getAuthTokenSource()
   const isEnvVarToken =
     source === 'CLAUDE_CODE_OAUTH_TOKEN' ||

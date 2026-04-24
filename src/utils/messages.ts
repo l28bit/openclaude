@@ -1,4 +1,5 @@
 import { feature } from 'bun:bundle'
+import { getAPIProvider } from './model/providers.js'
 import type { BetaUsage as Usage } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type {
   ContentBlock,
@@ -74,6 +75,7 @@ import type {
 import { isAdvisorBlock } from './advisor.js'
 import { isAgentSwarmsEnabled } from './agentSwarmsEnabled.js'
 import { count } from './array.js'
+import { isEnvTruthy } from './envUtils.js'
 import {
   type Attachment,
   type HookAttachment,
@@ -1765,6 +1767,7 @@ export function stripCallerFieldFromAssistantMessage(
           id: block.id,
           name: block.name,
           input: block.input,
+          ...(getAPIProvider() === 'gemini' && (block as any).extra_content ? { extra_content: (block as any).extra_content } : {})
         }
       }),
     },
@@ -2221,21 +2224,24 @@ export function normalizeMessagesForAPI(
 
                   // When tool search is enabled, preserve all fields including 'caller'
                   if (toolSearchEnabled) {
+                    const { extra_content, ...restBlock } = block as any
                     return {
-                      ...block,
+                      ...restBlock,
                       name: canonicalName,
                       input: normalizedInput,
+                      ...(getAPIProvider() === 'gemini' && extra_content ? { extra_content } : {})
                     }
                   }
 
                   // When tool search is NOT enabled, explicitly construct tool_use
                   // block with only standard API fields to avoid sending fields like
                   // 'caller' that may be stored in sessions from tool search runs
-                  return {
+                    return {
                     type: 'tool_use' as const,
                     id: block.id,
                     name: canonicalName,
                     input: normalizedInput,
+                    ...(getAPIProvider() === 'gemini' && (block as any).extra_content ? { extra_content: (block as any).extra_content } : {})
                   }
                 }
                 return block
@@ -3661,6 +3667,9 @@ Read the team config to discover your teammates' names. Check the task list peri
       ])
     }
     case 'todo_reminder': {
+      if (isEnvTruthy(process.env.OPENCLAUDE_DISABLE_TOOL_REMINDERS)) {
+        return []
+      }
       const todoItems = attachment.content
         .map((todo, index) => `${index + 1}. [${todo.status}] ${todo.content}`)
         .join('\n')
@@ -3679,6 +3688,9 @@ Read the team config to discover your teammates' names. Check the task list peri
     }
     case 'task_reminder': {
       if (!isTodoV2Enabled()) {
+        return []
+      }
+      if (isEnvTruthy(process.env.OPENCLAUDE_DISABLE_TOOL_REMINDERS)) {
         return []
       }
       const taskItems = attachment.content

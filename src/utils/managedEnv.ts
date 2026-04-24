@@ -8,6 +8,7 @@ import {
 } from './managedEnvConstants.js'
 import { clearMTLSCache } from './mtls.js'
 import { clearProxyCache, configureGlobalAgents } from './proxy.js'
+import { applyActiveProviderProfileFromConfig } from './providerProfiles.js'
 import { isSettingSourceEnabled } from './settings/constants.js'
 import {
   getSettings_DEPRECATED,
@@ -130,7 +131,7 @@ export function applySafeConfigEnvironmentVariables(): void {
         : null
   }
 
-  // Global config (~/.claude.json) is user-controlled. In CCD mode,
+  // Global config (~/.openclaude.json) is user-controlled. In CCD mode,
   // filterSettingsEnv strips keys that were in the spawn env snapshot so
   // the desktop host's operational vars (OTEL, etc.) are not overridden.
   Object.assign(process.env, filterSettingsEnv(getGlobalConfig().env))
@@ -175,6 +176,10 @@ export function applySafeConfigEnvironmentVariables(): void {
       process.env[key] = value
     }
   }
+
+  // Apply active provider profile only when startup did not explicitly
+  // select a provider via flags/env. Explicit startup intent should win.
+  applyActiveProviderProfileFromConfig()
 }
 
 /**
@@ -188,6 +193,10 @@ export function applyConfigEnvironmentVariables(): void {
   Object.assign(process.env, filterSettingsEnv(getGlobalConfig().env))
 
   Object.assign(process.env, filterSettingsEnv(getSettings_DEPRECATED()?.env))
+
+  // Keep runtime provider/model env aligned with the active profile, except
+  // when an explicit provider selection is already present in process.env.
+  applyActiveProviderProfileFromConfig()
 
   // Clear caches so agents are rebuilt with the new env vars
   clearCACertsCache()

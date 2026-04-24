@@ -14,6 +14,7 @@ import { getSmallFastModel } from 'src/utils/model/model.js'
 import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
+  isGithubNativeAnthropicMode,
 } from 'src/utils/model/providers.js'
 import { getProxyFetchOptions } from 'src/utils/proxy.js'
 import {
@@ -95,12 +96,14 @@ export async function getAnthropicClient({
   model,
   fetchOverride,
   source,
+  providerOverride,
 }: {
   apiKey?: string
   maxRetries: number
   model?: string
   fetchOverride?: ClientOptions['fetch']
   source?: string
+  providerOverride?: { model: string; baseURL: string; apiKey: string }
 }): Promise<Anthropic> {
   const containerId = process.env.CLAUDE_CODE_CONTAINER_ID
   const remoteSessionId = process.env.CLAUDE_CODE_REMOTE_SESSION_ID
@@ -154,10 +157,48 @@ export async function getAnthropicClient({
       fetch: resolvedFetch,
     }),
   }
+  // Agent routing override: use per-agent provider when configured.
+  // Strip auth-related headers to prevent leaking Anthropic credentials
+  // to third-party endpoints (SSRF / credential forwarding mitigation).
+  if (providerOverride) {
+    const { createOpenAIShimClient } = await import('./openaiShim.js')
+    const safeHeaders: Record<string, string> = {}
+    for (const [k, v] of Object.entries(defaultHeaders)) {
+      const lower = k.toLowerCase()
+      if (lower === 'authorization' || lower === 'x-api-key' || lower === 'api-key') continue
+      safeHeaders[k] = v
+    }
+    return createOpenAIShimClient({
+      defaultHeaders: safeHeaders,
+      maxRetries,
+      timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
+      providerOverride,
+    }) as unknown as Anthropic
+  }
+  // GitHub provider in native Anthropic API mode: send requests in Anthropic
+  // format so cache_control blocks are honoured and prompt caching works.
+  // Requires the GitHub endpoint (OPENAI_BASE_URL) to support Anthropic's
+  // messages API — set CLAUDE_CODE_GITHUB_ANTHROPIC_API=1 to opt in.
+  if (isGithubNativeAnthropicMode(model)) {
+    const githubBaseUrl =
+      process.env.OPENAI_BASE_URL?.replace(/\/$/, '') ??
+      'https://api.githubcopilot.com'
+    const githubToken =
+      process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''
+    const nativeArgs: ConstructorParameters<typeof Anthropic>[0] = {
+      ...ARGS,
+      baseURL: githubBaseUrl,
+      authToken: githubToken,
+      // No apiKey — we authenticate via Bearer token (authToken)
+      apiKey: null,
+    }
+    return new Anthropic(nativeArgs)
+  }
   if (
     isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_GITHUB) ||
-    isEnvTruthy(process.env.CLAUDE_CODE_USE_GEMINI)
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_GEMINI) ||
+    isEnvTruthy(process.env.CLAUDE_CODE_USE_MISTRAL)
   ) {
     const { createOpenAIShimClient } = await import('./openaiShim.js')
     return createOpenAIShimClient({

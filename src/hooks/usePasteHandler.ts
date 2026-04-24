@@ -15,6 +15,14 @@ import { getPlatform } from '../utils/platform.js'
 const CLIPBOARD_CHECK_DEBOUNCE_MS = 50
 const PASTE_COMPLETION_TIMEOUT_MS = 100
 
+export function supportsClipboardImageFallback(
+  platform: ReturnType<typeof getPlatform>,
+): boolean {
+  return (
+    platform === 'macos' || platform === 'windows' || platform === 'linux'
+  )
+}
+
 type PasteHandlerProps = {
   onPaste?: (text: string) => void
   onInput: (input: string, key: Key) => void
@@ -25,6 +33,24 @@ type PasteHandlerProps = {
     dimensions?: ImageDimensions,
     sourcePath?: string,
   ) => void
+}
+
+export function shouldHandleInputAsPaste(options: {
+  hasTextPasteHandler: boolean
+  hasImagePasteHandler: boolean
+  inputLength: number
+  pastePending: boolean
+  hasImageFilePath: boolean
+  isFromPaste: boolean
+}): boolean {
+  return (
+    (options.hasTextPasteHandler &&
+      (options.inputLength > PASTE_THRESHOLD ||
+        options.pastePending ||
+        options.hasImageFilePath ||
+        options.isFromPaste)) ||
+    (options.hasImagePasteHandler && options.hasImageFilePath)
+  )
 }
 
 export function usePasteHandler({
@@ -52,7 +78,9 @@ export function usePasteHandler({
   // that key is Enter, it submits the old input and the paste is lost.
   const pastePendingRef = React.useRef(false)
 
-  const isMacOS = React.useMemo(() => getPlatform() === 'macos', [])
+  const platform = React.useMemo(() => getPlatform(), [])
+  const isMacOS = platform === 'macos'
+  const canFallbackToClipboardImage = supportsClipboardImageFallback(platform)
 
   React.useEffect(() => {
     return () => {
@@ -178,7 +206,11 @@ export function usePasteHandler({
 
             // If paste is empty (common when trying to paste images with Cmd+V),
             // check if clipboard has an image (macOS only)
-            if (isMacOS && onImagePaste && pastedText.length === 0) {
+            if (
+              canFallbackToClipboardImage &&
+              onImagePaste &&
+              pastedText.length === 0
+            ) {
               checkClipboardForImage()
               return { chunks: [], timeoutId: null }
             }
@@ -202,7 +234,13 @@ export function usePasteHandler({
         pastePendingRef,
       )
     },
-    [checkClipboardForImage, isMacOS, onImagePaste, onPaste],
+    [
+      checkClipboardForImage,
+      canFallbackToClipboardImage,
+      isMacOS,
+      onImagePaste,
+      onPaste,
+    ],
   )
 
   // Paste detection is now done via the InputEvent's keypress.isPasted flag,
@@ -215,11 +253,6 @@ export function usePasteHandler({
     // Detect paste from the parsed keypress event.
     // The keypress parser sets isPasted=true for content within bracketed paste.
     const isFromPaste = event.keypress.isPasted
-
-    // If this is pasted content, set isPasting state for UI feedback
-    if (isFromPaste) {
-      setIsPasting(true)
-    }
 
     // Handle large pastes (>PASTE_THRESHOLD chars)
     // Usually we get one or two input characters at a time. If we
@@ -242,7 +275,13 @@ export function usePasteHandler({
     // When the user pastes an image with Cmd+V, the terminal sends an empty
     // bracketed paste sequence. The keypress parser emits this as isPasted=true
     // with empty input.
-    if (isFromPaste && input.length === 0 && isMacOS && onImagePaste) {
+    if (
+      isFromPaste &&
+      input.length === 0 &&
+      canFallbackToClipboardImage &&
+      onImagePaste
+    ) {
+      setIsPasting(true)
       checkClipboardForImage()
       // Reset isPasting since there's no text content to process
       setIsPasting(false)
@@ -250,14 +289,17 @@ export function usePasteHandler({
     }
 
     // Check if we should handle as paste (from bracketed paste, large input, or continuation)
-    const shouldHandleAsPaste =
-      onPaste &&
-      (input.length > PASTE_THRESHOLD ||
-        pastePendingRef.current ||
-        hasImageFilePath ||
-        isFromPaste)
+    const shouldHandleAsPaste = shouldHandleInputAsPaste({
+      hasTextPasteHandler: Boolean(onPaste),
+      hasImagePasteHandler: Boolean(onImagePaste),
+      inputLength: input.length,
+      pastePending: pastePendingRef.current,
+      hasImageFilePath,
+      isFromPaste,
+    })
 
     if (shouldHandleAsPaste) {
+      setIsPasting(true)
       pastePendingRef.current = true
       setPasteState(({ chunks, timeoutId }) => {
         return {
