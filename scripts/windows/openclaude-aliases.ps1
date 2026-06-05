@@ -48,19 +48,19 @@ function Set-OpenClaudeProvider {
 
   Push-Location (Get-OpenClaudeRepoRoot)
   try {
-    $args = @("run", "profile:init", "--", "--provider", $Provider)
+    $bunArgs = @("run", "profile:init", "--", "--provider", $Provider)
 
     if ($Model) {
-      $args += @("--model", $Model)
+      $bunArgs += @("--model", $Model)
     } elseif ($Provider -eq "ollama") {
-      $args += @("--goal", $Goal)
+      $bunArgs += @("--goal", $Goal)
     }
 
     if ($ApiKey) {
-      $args += @("--api-key", $ApiKey)
+      $bunArgs += @("--api-key", $ApiKey)
     }
 
-    & bun @args
+    & bun @bunArgs
     if ($LASTEXITCODE -ne 0) {
       throw "profile:init failed with exit code $LASTEXITCODE."
     }
