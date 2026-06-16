@@ -64,6 +64,7 @@ import {
   isPDFSupported,
   parsePDFPageRange,
 } from '../../utils/pdfUtils.js'
+import { checkVisionCapabilityForFile } from '../../utils/visionUtils.js'
 import {
   checkReadPermissionForTool,
   matchingRuleForInput,
@@ -524,14 +525,6 @@ export const FileReadTool = buildTool({
       }
     }
 
-    // SECURITY: UNC path check (no I/O) — defer filesystem operations
-    // until after user grants permission to prevent NTLM credential leaks
-    const isUncPath =
-      fullFilePath.startsWith('\\\\') || fullFilePath.startsWith('//')
-    if (isUncPath) {
-      return { result: true }
-    }
-
     // Binary extension check (string check on extension only, no I/O).
     // PDF, images, and SVG are excluded - this tool renders them natively.
     const ext = path.extname(fullFilePath).toLowerCase()
@@ -545,6 +538,35 @@ export const FileReadTool = buildTool({
         message: `This tool cannot read binary files. The file appears to be a binary ${ext} file. Please use appropriate tools for binary file analysis.`,
         errorCode: 4,
       }
+    }
+
+    // Vision-capability gate: refuse image reads when the active model
+    // explicitly lacks `supportsVision` (e.g. Xiaomi Mimo V2.5 Pro / Flash,
+    // Llama, Mistral). Returning early surfaces a clear `<tool_use_error>`
+    // to the model so it can pivot to a text-based approach (Bash `file`,
+    // `identify`, OCR) or `/model` to switch to a vision-capable model —
+    // instead of producing an image-only tool result that the provider
+    // rejects with a generic 400 (issue #1421).
+    const visionCheck = checkVisionCapabilityForFile(
+      fullFilePath,
+      toolUseContext.options.mainLoopModel,
+      {
+        baseUrl:
+          toolUseContext.options.providerOverride?.baseURL ??
+          process.env.OPENAI_BASE_URL ??
+          process.env.OPENAI_API_BASE,
+      },
+    )
+    if (visionCheck.result === false) {
+      return visionCheck
+    }
+
+    // SECURITY: UNC path check (no I/O) — defer filesystem operations
+    // until after user grants permission to prevent NTLM credential leaks
+    const isUncPath =
+      fullFilePath.startsWith('\\\\') || fullFilePath.startsWith('//')
+    if (isUncPath) {
+      return { result: true }
     }
 
     // Block specific device files that would hang (infinite output or blocking input).
