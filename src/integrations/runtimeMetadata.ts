@@ -6,6 +6,11 @@ import {
   getOpenAIContextWindowMatches,
   getOpenAIMaxOutputTokenMatches,
 } from '../utils/model/openaiContextWindows.js'
+import { getCachedModelsSync } from './discoveryCache.js'
+import {
+  getDiscoveryCacheKey,
+  getDiscoveryCacheTtlMs,
+} from './discoveryService.js'
 import { ensureIntegrationsLoaded } from './index.js'
 import {
   getAllModels,
@@ -14,16 +19,30 @@ import {
 } from './registry.js'
 import {
   getRouteDescriptor,
+  resolveRouteCredentialValue,
   resolveActiveRouteIdFromEnv,
   resolveRouteIdFromBaseUrl,
   type RouteDescriptor,
 } from './routeMetadata.js'
+import { parseCustomHeadersEnv } from '../utils/providerCustomHeaders.js'
 
 function normalizeModelApiName(
   value: string | undefined,
 ): string | null {
-  const trimmed = value?.trim().toLowerCase()
-  return trimmed ? trimmed : null
+  const baseModel = getBaseModelApiName(value)
+  return baseModel ? baseModel.toLowerCase() : null
+}
+
+function getBaseModelApiName(value: string | undefined): string | null {
+  const trimmed = value?.trim()
+  if (!trimmed) {
+    return null
+  }
+
+  const queryIndex = trimmed.indexOf('?')
+  const baseModel =
+    queryIndex === -1 ? trimmed : trimmed.slice(0, queryIndex).trim()
+  return baseModel || null
 }
 
 function matchesCatalogEntryModel(
@@ -262,7 +281,7 @@ function findModelDescriptorForApiName(
   routeId: string | null,
   modelApiName: string | undefined,
 ) {
-  const trimmedModel = modelApiName?.trim()
+  const trimmedModel = getBaseModelApiName(modelApiName)
   if (!trimmedModel) {
     return null
   }
@@ -329,6 +348,40 @@ function findCatalogEntryForApiName(
   return getCatalogEntryForModel(routeId, modelApiName)
 }
 
+function findCachedCatalogEntryForApiName(
+  routeId: string | null,
+  modelApiName: string | undefined,
+  runtimeEnv: NodeJS.ProcessEnv,
+): ModelCatalogEntry | null {
+  const normalizedModel = normalizeModelApiName(modelApiName)
+  if (!routeId || routeId === 'anthropic' || !normalizedModel) {
+    return null
+  }
+
+  const catalog = getRouteDescriptor(routeId)?.catalog
+  if (!catalog?.discovery) {
+    return null
+  }
+
+  const baseUrl = runtimeEnv.OPENAI_BASE_URL ?? runtimeEnv.OPENAI_API_BASE
+  const cacheKey = getDiscoveryCacheKey(routeId, {
+    baseUrl,
+    apiKey: resolveRouteCredentialValue({
+      routeId,
+      baseUrl,
+      processEnv: runtimeEnv,
+    }),
+    headers: parseCustomHeadersEnv(runtimeEnv.ANTHROPIC_CUSTOM_HEADERS),
+  })
+  const cached = getCachedModelsSync(cacheKey, getDiscoveryCacheTtlMs(routeId))
+
+  return (
+    cached?.models.find(entry =>
+      matchesCatalogEntryModel(routeId, entry, normalizedModel),
+    ) ?? null
+  )
+}
+
 export function resolveModelRuntimeLimits(options: {
   model: string
   processEnv?: NodeJS.ProcessEnv
@@ -344,16 +397,23 @@ export function resolveModelRuntimeLimits(options: {
   const routeId = resolveActiveRouteIdFromEnv(runtimeEnv, {
     activeProfileProvider: options.activeProfileProvider,
   })
-  const catalogEntry = findCatalogEntryForApiName(routeId, options.model)
+  const modelApiName = getBaseModelApiName(options.model) ?? options.model
+  const catalogEntry = findCatalogEntryForApiName(routeId, modelApiName)
+  const cachedCatalogEntry = findCachedCatalogEntryForApiName(
+    routeId,
+    modelApiName,
+    runtimeEnv,
+  )
   const modelDescriptor =
     getModelDescriptorForCatalogEntry(catalogEntry) ??
-    findModelDescriptorForApiName(routeId, options.model)
+    getModelDescriptorForCatalogEntry(cachedCatalogEntry) ??
+    findModelDescriptorForApiName(routeId, modelApiName)
   const externalContextWindow = getOpenAIContextWindowMatches(
-    options.model,
+    modelApiName,
     runtimeEnv,
   )
   const externalMaxOutputTokens = getOpenAIMaxOutputTokenMatches(
-    options.model,
+    modelApiName,
     runtimeEnv,
   )
 
@@ -361,11 +421,13 @@ export function resolveModelRuntimeLimits(options: {
     contextWindow:
       externalContextWindow.exact ??
       catalogEntry?.contextWindow ??
+      cachedCatalogEntry?.contextWindow ??
       externalContextWindow.prefix ??
       modelDescriptor?.contextWindow,
     maxOutputTokens:
       externalMaxOutputTokens.exact ??
       catalogEntry?.maxOutputTokens ??
+      cachedCatalogEntry?.maxOutputTokens ??
       externalMaxOutputTokens.prefix ??
       modelDescriptor?.maxOutputTokens,
   }

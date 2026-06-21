@@ -97,8 +97,6 @@ export const INTENTIONALLY_BUNDLED: string[] = [
   'semver',
   'shell-quote',
   'signal-exit',
-  'stack-utils',
-  'code-excerpt',
   'type-fest',
   // Networking
   'axios',
@@ -123,8 +121,6 @@ export const INTENTIONALLY_BUNDLED: string[] = [
     // gRPC (bundled into CLI, not external)
   '@grpc/grpc-js',
   '@grpc/proto-loader',
-  // Web scraping
-  '@mendable/firecrawl-js',
   // Language server protocol
   'vscode-languageserver-protocol',
   // File watching
