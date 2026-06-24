@@ -25,6 +25,7 @@ import {
   type RouteDescriptor,
 } from './routeMetadata.js'
 import { parseCustomHeadersEnv } from '../utils/providerCustomHeaders.js'
+import { firstUsableCredential } from '../services/api/credentialPool.js'
 
 function normalizeModelApiName(
   value: string | undefined,
@@ -277,6 +278,21 @@ function getModelDescriptorForCatalogEntry(entry: ModelCatalogEntry | null) {
   return getModel(entry.modelDescriptorId) ?? null
 }
 
+function getProviderScopedModelSegments(modelApiName: string): string[] {
+  const segments = modelApiName
+    .split('/')
+    .map(segment => segment.trim())
+    .filter(Boolean)
+  const suffixes = segments
+    .slice(1)
+    .map((_, index) => segments.slice(index + 1).join('/'))
+  const accountQualifiedSuffixes = suffixes
+    .filter(suffix => /^[^/]+\/models\//.test(suffix))
+    .map(suffix => `accounts/${suffix}`)
+
+  return [...suffixes, ...accountQualifiedSuffixes]
+}
+
 function findModelDescriptorForApiName(
   routeId: string | null,
   modelApiName: string | undefined,
@@ -286,18 +302,25 @@ function findModelDescriptorForApiName(
     return null
   }
   const normalizedModel = trimmedModel.toLowerCase()
+  const providerScopedSegments = getProviderScopedModelSegments(trimmedModel)
+  const normalizedProviderScopedSegments = getProviderScopedModelSegments(
+    normalizedModel,
+  )
 
   ensureIntegrationsLoaded()
   const models = getAllModels()
     .map(model => {
+      const providerModelMap = model.providerModelMap
       const routeMappedModel = routeId
-        ? model.providerModelMap?.[routeId]
+        ? providerModelMap?.[routeId]
         : undefined
+      const hasProviderModelMap =
+        providerModelMap && Object.keys(providerModelMap).length > 0
       return {
         model,
         names: [
           model.id,
-          model.defaultModel,
+          hasProviderModelMap ? routeMappedModel : model.defaultModel,
           routeMappedModel,
         ].filter((value): value is string => Boolean(value?.trim())),
       }
@@ -321,12 +344,19 @@ function findModelDescriptorForApiName(
   }
 
   for (const candidate of models) {
+    if (candidate.names.some(name => providerScopedSegments.includes(name.trim()))) {
+      return candidate.model
+    }
+  }
+
+  for (const candidate of models) {
     if (
       candidate.names.some(name => {
         const normalizedName = name.trim().toLowerCase()
         return (
           normalizedModel === normalizedName ||
-          normalizedModel.startsWith(normalizedName)
+          normalizedModel.startsWith(normalizedName) ||
+          normalizedProviderScopedSegments.includes(normalizedName)
         )
       })
     ) {
@@ -366,11 +396,13 @@ function findCachedCatalogEntryForApiName(
   const baseUrl = runtimeEnv.OPENAI_BASE_URL ?? runtimeEnv.OPENAI_API_BASE
   const cacheKey = getDiscoveryCacheKey(routeId, {
     baseUrl,
-    apiKey: resolveRouteCredentialValue({
-      routeId,
-      baseUrl,
-      processEnv: runtimeEnv,
-    }),
+    apiKey: firstUsableCredential(
+      resolveRouteCredentialValue({
+        routeId,
+        baseUrl,
+        processEnv: runtimeEnv,
+      }),
+    ),
     headers: parseCustomHeadersEnv(runtimeEnv.ANTHROPIC_CUSTOM_HEADERS),
   })
   const cached = getCachedModelsSync(cacheKey, getDiscoveryCacheTtlMs(routeId))

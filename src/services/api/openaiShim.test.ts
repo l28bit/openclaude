@@ -12,6 +12,7 @@ const originalEnv = {
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
   OPENAI_API_BASE: process.env.OPENAI_API_BASE,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+  OPENAI_API_KEYS: process.env.OPENAI_API_KEYS,
   OPENAI_MODEL: process.env.OPENAI_MODEL,
   OPENAI_API_FORMAT: process.env.OPENAI_API_FORMAT,
   OPENAI_AUTH_HEADER: process.env.OPENAI_AUTH_HEADER,
@@ -43,6 +44,7 @@ const originalEnv = {
   MIMO_API_KEY: process.env.MIMO_API_KEY,
   OPENGATEWAY_API_KEY: process.env.OPENGATEWAY_API_KEY,
   OPENGATEWAY_BASE_URL: process.env.OPENGATEWAY_BASE_URL,
+  OPENCODE_API_KEY: process.env.OPENCODE_API_KEY,
   CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED: process.env.CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED,
   CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED_ID: process.env.CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED_ID,
 }
@@ -150,6 +152,7 @@ beforeEach(async () => {
   process.env.OPENAI_BASE_URL = 'http://example.test/v1'
   delete process.env.OPENAI_API_BASE
   process.env.OPENAI_API_KEY = 'test-key'
+  delete process.env.OPENAI_API_KEYS
   delete process.env.OPENAI_MODEL
   delete process.env.OPENAI_API_FORMAT
   delete process.env.OPENAI_AUTH_HEADER
@@ -181,6 +184,7 @@ beforeEach(async () => {
   delete process.env.MIMO_API_KEY
   delete process.env.OPENGATEWAY_API_KEY
   delete process.env.OPENGATEWAY_BASE_URL
+  delete process.env.OPENCODE_API_KEY
   delete process.env.CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED
   delete process.env.CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED_ID
 })
@@ -190,6 +194,7 @@ afterEach(() => {
     restoreEnv('OPENAI_BASE_URL', originalEnv.OPENAI_BASE_URL)
     restoreEnv('OPENAI_API_BASE', originalEnv.OPENAI_API_BASE)
     restoreEnv('OPENAI_API_KEY', originalEnv.OPENAI_API_KEY)
+    restoreEnv('OPENAI_API_KEYS', originalEnv.OPENAI_API_KEYS)
     restoreEnv('OPENAI_MODEL', originalEnv.OPENAI_MODEL)
     restoreEnv('OPENAI_API_FORMAT', originalEnv.OPENAI_API_FORMAT)
     restoreEnv('OPENAI_AUTH_HEADER', originalEnv.OPENAI_AUTH_HEADER)
@@ -221,6 +226,7 @@ afterEach(() => {
     restoreEnv('MIMO_API_KEY', originalEnv.MIMO_API_KEY)
     restoreEnv('OPENGATEWAY_API_KEY', originalEnv.OPENGATEWAY_API_KEY)
     restoreEnv('OPENGATEWAY_BASE_URL', originalEnv.OPENGATEWAY_BASE_URL)
+    restoreEnv('OPENCODE_API_KEY', originalEnv.OPENCODE_API_KEY)
     restoreEnv('CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED', originalEnv.CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED)
     restoreEnv('CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED_ID', originalEnv.CLAUDE_CODE_PROVIDER_PROFILE_ENV_APPLIED_ID)
     globalThis.fetch = originalFetch
@@ -2446,6 +2452,148 @@ test('xiaomi mimo route uses api-key auth header and max_completion_tokens', asy
   expect(capturedBody).not.toHaveProperty('max_tokens')
 })
 
+test.each([
+  'minimax-m3',
+  'minimax-m2.7',
+  'qwen3.7-max',
+  'qwen3.7-plus',
+  'qwen3.6-plus',
+])('opencode go %s direct env routing ignores stale custom auth and uses the Anthropic Messages request contract', async model => {
+  let capturedUrl = ''
+  let capturedHeaders: Headers | undefined
+  let capturedBody: Record<string, unknown> | undefined
+
+  process.env.OPENAI_BASE_URL = 'https://opencode.ai/zen/go/v1'
+  delete process.env.OPENAI_API_KEY
+  process.env.OPENAI_MODEL = model
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  process.env.OPENCODE_API_KEY = 'fake-opencode-key'
+  process.env.OPENAI_AUTH_HEADER = 'Authorization'
+  process.env.OPENAI_AUTH_SCHEME = 'bearer'
+  process.env.OPENAI_AUTH_HEADER_VALUE = 'stale-header-value'
+
+  globalThis.fetch = (async (input, init) => {
+    capturedUrl = String(input)
+    capturedHeaders = new Headers(init?.headers)
+    capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+
+    return new Response(
+      JSON.stringify({
+        id: 'msg_opencode_go',
+        type: 'message',
+        role: 'assistant',
+        model,
+        content: [{ type: 'text', text: 'ok' }],
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+        },
+      }),
+      {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      },
+    )
+  }) as unknown as FetchType
+
+  const client = createOpenAIShimClient({}) as OpenAIShimClient
+
+  await client.beta.messages.create({
+    model,
+    system: 'test system',
+    messages: [
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'hello' }],
+      },
+    ],
+    max_tokens: 32,
+    stream: false,
+  })
+
+  expect(capturedUrl).toBe('https://opencode.ai/zen/go/v1/messages')
+  expect(capturedHeaders?.get('x-api-key')).toBe('fake-opencode-key')
+  expect(capturedHeaders?.get('authorization')).toBeNull()
+  expect(capturedBody).toEqual({
+    model,
+    messages: [
+      {
+        role: 'user',
+        content: [{ type: 'text', text: 'hello' }],
+      },
+    ],
+    max_tokens: 32,
+    stream: false,
+    system: 'test system',
+  })
+  expect(capturedBody).not.toHaveProperty('max_completion_tokens')
+  expect(capturedBody).not.toHaveProperty('store')
+})
+
+test('opencode go messages endpoint rotates raw x-api-key credentials after rate-limit failure', async () => {
+  const capturedUrls: string[] = []
+  const capturedKeys: Array<string | null> = []
+
+  process.env.OPENAI_BASE_URL = 'https://opencode.ai/zen/go/v1'
+  delete process.env.OPENAI_API_KEY
+  delete process.env.OPENAI_API_KEYS
+  process.env.OPENAI_MODEL = 'minimax-m3'
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  process.env.OPENCODE_API_KEY = 'fake-opencode-a,fake-opencode-b'
+
+  globalThis.fetch = (async (input, init) => {
+    const headers = new Headers(init?.headers)
+    capturedUrls.push(String(input))
+    capturedKeys.push(headers.get('x-api-key'))
+
+    if (capturedKeys.length === 1) {
+      return new Response(JSON.stringify({ error: { message: 'rate limited' } }), {
+        status: 429,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+
+    return new Response(
+      JSON.stringify({
+        id: 'msg_opencode_go_retry',
+        type: 'message',
+        role: 'assistant',
+        model: 'minimax-m3',
+        content: [{ type: 'text', text: 'ok' }],
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        usage: {
+          input_tokens: 1,
+          output_tokens: 1,
+        },
+      }),
+      {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      },
+    )
+  }) as unknown as FetchType
+
+  const client = createOpenAIShimClient({}) as OpenAIShimClient
+
+  await client.beta.messages.create({
+    model: 'minimax-m3',
+    messages: [{ role: 'user', content: 'hello' }],
+    max_tokens: 32,
+    stream: false,
+  })
+
+  expect(capturedUrls).toEqual([
+    'https://opencode.ai/zen/go/v1/messages',
+    'https://opencode.ai/zen/go/v1/messages',
+  ])
+  expect(capturedKeys).toEqual(['fake-opencode-a', 'fake-opencode-b'])
+})
+
 test('gitlawb opengateway provider flag sends OPENGATEWAY_API_KEY as bearer auth despite stale generic base URL', async () => {
   process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1'
   process.env.OPENAI_MODEL = 'gpt-5.5'
@@ -2555,6 +2703,36 @@ test('gitlawb opengateway provider flag prefers OPENGATEWAY_API_KEY over generic
   expect(captured.authorization).toBe('Bearer fake-ogw-key')
 })
 
+test('gitlawb opengateway provider flag prefers OPENGATEWAY_API_KEY over generic OPENAI_API_KEYS pool', async () => {
+  process.env.OPENGATEWAY_BASE_URL = 'http://localhost:8181/v1'
+  process.env.OPENGATEWAY_API_KEY = 'fake-ogw-key'
+  process.env.OPENAI_API_KEYS = 'fake-openai-pool-a,fake-openai-pool-b'
+  delete process.env.OPENAI_API_KEY
+
+  const result = applyProviderFlag('gitlawb-opengateway', [])
+  expect(result.error).toBeUndefined()
+
+  const captured = await captureChatCompletionRequest()
+
+  expect(captured.url).toBe('http://localhost:8181/v1/chat/completions')
+  expect(captured.authorization).toBe('Bearer fake-ogw-key')
+})
+
+test('gitlawb opengateway provider flag uses generic OPENAI_API_KEYS pool before generic OPENAI_API_KEY fallback', async () => {
+  process.env.OPENGATEWAY_BASE_URL = 'http://localhost:8181/v1'
+  process.env.OPENAI_API_KEYS = 'fake-openai-pool-a,fake-openai-pool-b'
+  process.env.OPENAI_API_KEY = 'fake-generic-openai-key'
+  delete process.env.OPENGATEWAY_API_KEY
+
+  const result = applyProviderFlag('gitlawb-opengateway', [])
+  expect(result.error).toBeUndefined()
+
+  const captured = await captureChatCompletionRequest()
+
+  expect(captured.url).toBe('http://localhost:8181/v1/chat/completions')
+  expect(captured.authorization).toBe('Bearer fake-openai-pool-a')
+})
+
 test('gitlawb opengateway stored provider profile key becomes bearer auth', async () => {
   delete process.env.OPENAI_API_KEY
   delete process.env.OPENGATEWAY_API_KEY
@@ -2585,6 +2763,285 @@ test('openai route still sends OPENAI_API_KEY as bearer auth', async () => {
   expect(captured.authorization).toBe('Bearer fake-openai-key')
 })
 
+test('OPENAI_API_KEYS rejects placeholder values before sending requests', async () => {
+  const authorizations: Array<string | null> = []
+
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1'
+  process.env.OPENAI_MODEL = 'gpt-5.5'
+  process.env.OPENAI_API_KEYS = 'key-a,SUA_CHAVE'
+  process.env.OPENAI_API_KEY = 'single-key-should-not-hide-invalid-pool'
+
+  globalThis.fetch = (async (_input, init) => {
+    const headers = init?.headers as Record<string, string> | undefined
+    authorizations.push(headers?.Authorization ?? headers?.authorization ?? null)
+    return makeChatCompletionResponse('gpt-5.5')
+  }) as unknown as FetchType
+
+  const client = createOpenAIShimClient({}) as OpenAIShimClient
+  await expect(
+    client.beta.messages.create({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'hello' }],
+      max_tokens: 32,
+      stream: false,
+    }),
+  ).rejects.toThrow(/SUA_CHAVE|Authentication failed/)
+
+  expect(authorizations).toEqual([])
+})
+test('OPENAI_API_KEYS rotates to the next key on rate-limit failure', async () => {
+  const authorizations: Array<string | null> = []
+
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1'
+  process.env.OPENAI_MODEL = 'gpt-5.5'
+  process.env.OPENAI_API_KEYS = 'key-a,key-b'
+  process.env.OPENAI_API_KEY = 'single-key-should-not-win'
+
+  globalThis.fetch = (async (_input, init) => {
+    const headers = init?.headers as Record<string, string> | undefined
+    authorizations.push(headers?.Authorization ?? headers?.authorization ?? null)
+
+    if (authorizations.length === 1) {
+      return new Response(JSON.stringify({ error: { message: 'rate limited' } }), {
+        status: 429,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+
+    return makeChatCompletionResponse('gpt-5.5')
+  }) as unknown as FetchType
+
+  const client = createOpenAIShimClient({}) as OpenAIShimClient
+  await client.beta.messages.create({
+    model: 'gpt-5.5',
+    messages: [{ role: 'user', content: 'hello' }],
+    max_tokens: 32,
+    stream: false,
+  })
+
+  expect(authorizations).toEqual(['Bearer key-a', 'Bearer key-b'])
+})
+
+test('comma-separated OPENAI_API_KEY rotates to the next key on rate-limit failure', async () => {
+  const authorizations: Array<string | null> = []
+
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1'
+  process.env.OPENAI_MODEL = 'gpt-5.5'
+  process.env.OPENAI_API_KEY = 'key-a,key-b'
+  delete process.env.OPENAI_API_KEYS
+
+  globalThis.fetch = (async (_input, init) => {
+    const headers = init?.headers as Record<string, string> | undefined
+    authorizations.push(headers?.Authorization ?? headers?.authorization ?? null)
+
+    if (authorizations.length === 1) {
+      return new Response(JSON.stringify({ error: { message: 'rate limited' } }), {
+        status: 429,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+
+    return makeChatCompletionResponse('gpt-5.5')
+  }) as unknown as FetchType
+
+  const client = createOpenAIShimClient({}) as OpenAIShimClient
+  await client.beta.messages.create({
+    model: 'gpt-5.5',
+    messages: [{ role: 'user', content: 'hello' }],
+    max_tokens: 32,
+    stream: false,
+  })
+
+  expect(authorizations).toEqual(['Bearer key-a', 'Bearer key-b'])
+})
+
+test('OPENAI_API_KEYS does not rotate through pool on provider 5xx outage', async () => {
+  const authorizations: Array<string | null> = []
+
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1'
+  process.env.OPENAI_MODEL = 'gpt-5.5'
+  process.env.OPENAI_API_KEYS = 'key-a,key-b'
+  delete process.env.OPENAI_API_KEY
+
+  globalThis.fetch = (async (_input, init) => {
+    const headers = init?.headers as Record<string, string> | undefined
+    authorizations.push(headers?.Authorization ?? headers?.authorization ?? null)
+
+    return new Response(JSON.stringify({ error: { message: 'server error' } }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as unknown as FetchType
+
+  const client = createOpenAIShimClient({}) as OpenAIShimClient
+  await expect(
+    client.beta.messages.create({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'hello' }],
+      max_tokens: 32,
+      stream: false,
+    }),
+  ).rejects.toThrow()
+
+  expect(authorizations).toEqual(['Bearer key-a'])
+})
+test('OPENAI_API_KEYS preserves cooldown state across client requests', async () => {
+  const authorizations: Array<string | null> = []
+
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1'
+  process.env.OPENAI_MODEL = 'gpt-5.5'
+  process.env.OPENAI_API_KEYS = 'key-a,key-b'
+
+  globalThis.fetch = (async (_input, init) => {
+    const headers = init?.headers as Record<string, string> | undefined
+    authorizations.push(headers?.Authorization ?? headers?.authorization ?? null)
+
+    if (authorizations.length === 1) {
+      return new Response(JSON.stringify({ error: { message: 'rate limited' } }), {
+        status: 429,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+
+    return makeChatCompletionResponse('gpt-5.5')
+  }) as unknown as FetchType
+
+  const client = createOpenAIShimClient({}) as OpenAIShimClient
+  for (let i = 0; i < 2; i++) {
+    await client.beta.messages.create({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'hello' }],
+      max_tokens: 32,
+      stream: false,
+    })
+  }
+
+  expect(authorizations).toEqual([
+    'Bearer key-a',
+    'Bearer key-b',
+    'Bearer key-b',
+  ])
+})
+
+test('OPENAI_API_KEYS rotates Azure api-key auth on auth failure', async () => {
+  const apiKeys: Array<string | null> = []
+
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  process.env.OPENAI_BASE_URL = 'https://example.openai.azure.com/openai/deployments/test/v1'
+  process.env.OPENAI_MODEL = 'gpt-5.5'
+  process.env.OPENAI_API_KEYS = 'azure-key-a,azure-key-b'
+
+  globalThis.fetch = (async (_input, init) => {
+    const headers = init?.headers as Record<string, string> | undefined
+    apiKeys.push(headers?.['api-key'] ?? null)
+
+    if (apiKeys.length === 1) {
+      return new Response(JSON.stringify({ error: { message: 'unauthorized' } }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    }
+
+    return makeChatCompletionResponse('gpt-5.5')
+  }) as unknown as FetchType
+
+  const client = createOpenAIShimClient({}) as OpenAIShimClient
+  await client.beta.messages.create({
+    model: 'gpt-5.5',
+    messages: [{ role: 'user', content: 'hello' }],
+    max_tokens: 32,
+    stream: false,
+  })
+
+  expect(apiKeys).toEqual(['azure-key-a', 'azure-key-b'])
+})
+
+test('OPENAI_API_KEYS does not reuse auth-disabled credentials across client requests', async () => {
+  const authorizations: Array<string | null> = []
+
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1'
+  process.env.OPENAI_MODEL = 'gpt-5.5'
+  process.env.OPENAI_API_KEYS = 'key-a,key-b'
+  delete process.env.OPENAI_API_KEY
+
+  globalThis.fetch = (async (_input, init) => {
+    const headers = init?.headers as Record<string, string> | undefined
+    authorizations.push(headers?.Authorization ?? headers?.authorization ?? null)
+
+    return new Response(JSON.stringify({ error: { message: 'unauthorized' } }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as unknown as FetchType
+
+  const client = createOpenAIShimClient({}) as OpenAIShimClient
+  await expect(
+    client.beta.messages.create({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'hello' }],
+      max_tokens: 32,
+      stream: false,
+    }),
+  ).rejects.toThrow()
+
+  await expect(
+    client.beta.messages.create({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'hello again' }],
+      max_tokens: 32,
+      stream: false,
+    }),
+  ).rejects.toThrow()
+
+  expect(authorizations).toEqual(['Bearer key-a', 'Bearer key-b'])
+})
+
+test('OPENAI_API_KEYS permanently evicts 403 auth failures', async () => {
+  const authorizations: Array<string | null> = []
+
+  process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1'
+  process.env.OPENAI_MODEL = 'gpt-5.5'
+  process.env.OPENAI_API_KEYS = 'key-a,key-b'
+  delete process.env.OPENAI_API_KEY
+
+  globalThis.fetch = (async (_input, init) => {
+    const headers = init?.headers as Record<string, string> | undefined
+    authorizations.push(headers?.Authorization ?? headers?.authorization ?? null)
+
+    return new Response(JSON.stringify({ error: { message: 'forbidden' } }), {
+      status: 403,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }) as unknown as FetchType
+
+  const client = createOpenAIShimClient({}) as OpenAIShimClient
+  await expect(
+    client.beta.messages.create({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'hello' }],
+      max_tokens: 32,
+      stream: false,
+    }),
+  ).rejects.toThrow()
+
+  await expect(
+    client.beta.messages.create({
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: 'hello again' }],
+      max_tokens: 32,
+      stream: false,
+    }),
+  ).rejects.toThrow()
+
+  expect(authorizations).toEqual(['Bearer key-a', 'Bearer key-b'])
+})
 test('does not use BNKR_API_KEY for non-Bankr OpenAI-compatible routes', async () => {
   let capturedAuthorization: string | null = null
 
@@ -4500,6 +4957,122 @@ test('non-streaming: real content takes precedence over reasoning_content', asyn
     { type: 'thinking', thinking: 'I need to calculate this.' },
     { type: 'text', text: 'The answer is 42.' },
   ])
+})
+
+test('non-streaming: preserves response body when usage parsing fails', async () => {
+  const json = JSON as unknown as { parse: typeof JSON.parse }
+  const originalJSONParse = json.parse
+  const responseBody = JSON.stringify({
+    id: 'chatcmpl-1',
+    model: 'glm-5',
+    choices: [
+      {
+        message: {
+          role: 'assistant',
+          content: 'ok',
+        },
+        finish_reason: 'stop',
+      },
+    ],
+    usage: {
+      prompt_tokens: 10,
+      completion_tokens: 20,
+      total_tokens: 30,
+    },
+  })
+  let usageParseFailed = false
+
+  // Throw only for the usage-extraction parse of the response body.
+  // A global "throw once" mock is unreliable here: Bun's native
+  // Response.json() does not go through JS-level JSON.parse, so the
+  // second parse the original test relied on never happens (parseCalls
+  // stays at 1 and `toBeGreaterThan(1)` fails). Scoping the failure to
+  // the response body targets the _doRequest parse without breaking
+  // unrelated JSON.parse calls in the request pipeline, and works in
+  // both Bun (native Response.json) and Node (undici, which does call
+  // JSON.parse — guarded by `usageParseFailed` so it won't throw again).
+  json.parse = ((text: string, reviver?: Parameters<typeof JSON.parse>[1]) => {
+    if (!usageParseFailed && text === responseBody) {
+      usageParseFailed = true
+      throw new Error('simulated usage parse failure')
+    }
+    return originalJSONParse(text, reviver)
+  }) as typeof JSON.parse
+
+  try {
+    globalThis.fetch = (async () => {
+      return new Response(responseBody, {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      })
+    }) as unknown as FetchType
+
+    const client = createOpenAIShimClient({}) as OpenAIShimClient
+
+    const result = (await client.beta.messages.create({
+      model: 'glm-5',
+      system: 'test system',
+      messages: [{ role: 'user', content: 'hello' }],
+      max_tokens: 64,
+      stream: false,
+    })) as { content: Array<Record<string, unknown>> }
+
+    // Usage extraction threw, but the recreated Response still holds the
+    // body so downstream response.json() can read it.
+    expect(usageParseFailed).toBe(true)
+    expect(result.content).toEqual([{ type: 'text', text: 'ok' }])
+  } finally {
+    json.parse = originalJSONParse
+  }
+})
+
+test('non-streaming: preserves response.url routing metadata after body read', async () => {
+  // _doRequest reads the body for usage extraction and recreates the
+  // Response with new Response(bodyText, ...). That drops response.url to
+  // "", which breaks create()'s /responses, /messages, and Gemini routing.
+  // This test pins an Anthropic-shaped body behind a /messages URL: if url
+  // is preserved, create() passes the body through unchanged; if url is
+  // lost, it falls through to _convertNonStreamingResponse and the
+  // Anthropic-only fields (stop_reason, input_tokens) surface as wrong
+  // output or missing content.
+  const anthropicBody = JSON.stringify({
+    id: 'msg_1',
+    type: 'message',
+    role: 'assistant',
+    content: [{ type: 'text', text: 'passthrough ok' }],
+    model: 'claude-3',
+    stop_reason: 'end_turn',
+    usage: { input_tokens: 10, output_tokens: 20 },
+  })
+
+  globalThis.fetch = (async () => {
+    const r = new Response(anthropicBody, {
+      headers: { 'Content-Type': 'application/json' },
+    })
+    // fetch() sets .url from the request; new Response() cannot. Simulate
+    // the fetch-attached URL so create()'s routing can see /messages.
+    Object.defineProperty(r, 'url', {
+      value: 'https://api.anthropic-shaped.example.com/v1/messages',
+      configurable: true,
+    })
+    return r
+  }) as unknown as FetchType
+
+  const client = createOpenAIShimClient({}) as OpenAIShimClient
+
+  const result = (await client.beta.messages.create({
+    model: 'glm-5',
+    system: 'test system',
+    messages: [{ role: 'user', content: 'hello' }],
+    max_tokens: 64,
+    stream: false,
+  })) as { content: Array<Record<string, unknown>> }
+
+  // /messages passthrough returns the Anthropic body verbatim. If url were
+  // lost, _convertNonStreamingResponse would try to read OpenAI choices[]
+  // and content would not match.
+  expect(result.content).toEqual([{ type: 'text', text: 'passthrough ok' }])
 })
 
 test('non-streaming: strips <think> tag block from assistant content', async () => {
